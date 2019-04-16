@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: es template
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: 
+      - dev
+      - stg
+      - prd
+  InstanceCount:
+    Type: Number
+    Default: 1
+  InstanceType:
+    Type: String
+    Default: 't2.small.elasticsearch'
+  EBSVolumeSize:
+    Type: Number
+    Default: 10
+  ElasticsearchVersion:
+    Type: String
+    Default: '6.3'
+  AllowedIpAddresses:
+    Type: String
+    Default: 'xxx.xxx.xxx.xxx/xxx,xxx.xxx.xxx.xxx'
+  PolicyVersion:
+    Type: String
+    Default: '2012-10-17'
+
+Outputs:
+  ESDomainArn:
+    Description: Elasticsearch service Arn
+    Value: !GetAtt ES.DomainArn
+    Export:
+      Name: !Sub '${Env}-ESArn'
+
+Resources:
+  LambdaToESRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: !Ref PolicyVersion
+        Statement:
+          -
+            Effect: 'Allow'
+            Action: 'sts:AssumeRole'
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+      Policies:
+        - PolicyName: 'es-access'
+          PolicyDocument:
+            Version: !Ref PolicyVersion
+            Statement:
+              - 
+                Effect: 'Allow'
+                Action: 'sts:AssumeRole'
+                Resource: '*'
+        - PolicyName: 'lambda-basic-execution'
+          PolicyDocument:
+            Version: !Ref PolicyVersion
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                Resource: '*'
+      RoleName: !Sub '${AWS::StackName}-LambdaToESRole'
+
+  ES:
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              AWS:  !Sub 'arn:aws:iam::${AWS::AccountId}:role/${LambdaToESRole}'
+            Action: 'es:*'
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${AWS::StackName}/*'
+          - Effect: 'Allow'
+            Principal:
+              AWS: '*'
+            Action: 'es:*'
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${AWS::StackName}/*'
+            Condition:
+              IpAddress:
+                aws:SourceIp:  !Sub '${AllowedIpAddresses}'
+      DomainName: !Ref AWS::StackName
+      EBSOptions:
+        EBSEnabled: true
+        VolumeSize: !Ref EBSVolumeSize
+        VolumeType: "gp2"
+      ElasticsearchClusterConfig:
+        DedicatedMasterEnabled: false
+        InstanceCount: !Ref InstanceCount
+        InstanceType: !Ref InstanceType
+        ZoneAwarenessEnabled: false
+      ElasticsearchVersion: !Ref ElasticsearchVersion

@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: log aggregation template
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: 
+      - dev
+      - stg
+      - prd
+  AppName:
+    Type: String
+    Description: e.g. some application
+  ESArn:
+    Type: String
+  KFHIntervalInSeconds:
+    Type: Number
+    Default: 60
+  KFHSizeInMBs:
+    Type: Number
+    Default: 1
+  PolicyVersion:
+    Type: String
+    Default: '2012-10-17'
+
+Resources:
+
+  FirehoseToS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: !Ref PolicyVersion
+        Statement:
+          -
+            Effect: 'Allow'
+            Action: 'sts:AssumeRole'
+            Principal:
+              Service:
+                - 'firehose.amazonaws.com'
+      Policies:
+        - PolicyName: 's3-access'
+          PolicyDocument: 
+            Version: !Ref PolicyVersion
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                - 's3:AbortMultipartUpload'
+                - 's3:GetBucketLocation'
+                - 's3:GetObject'
+                - 's3:ListBucket'
+                - 's3:ListBucketMultipartUploads'
+                - 's3:PutObject'
+                Resource: '*'
+        - PolicyName: 'log-put'
+          PolicyDocument: 
+            Version: !Ref PolicyVersion
+            Statement:
+              - Effect: 'Allow'
+                Action: 'logs:PutEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+      RoleName: !Sub '${AWS::StackName}-FirehoseToS3Role'
+
+  FirehoseToESRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: !Ref PolicyVersion
+        Statement:
+          -
+            Effect: 'Allow'
+            Action: 'sts:AssumeRole'
+            Principal:
+              Service:
+                - 'firehose.amazonaws.com'
+      Policies:
+        - PolicyName: 'es-access'
+          PolicyDocument: 
+            Version: !Ref PolicyVersion
+            Statement:
+              - Effect: 'Allow'
+                Action: 'es:*'
+                Resource:
+                  - !Sub '${ESArn}*'
+                  - !Sub '${ESArn}/*'
+        - PolicyName: 'log-put'
+          PolicyDocument:
+            Version: !Ref PolicyVersion
+            Statement:
+              - Effect: 'Allow'
+                Action: 'logs:PutEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+      RoleName: !Sub '${AWS::StackName}-FirehoseToESRole'
+
+  ErrorLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${Env}-${AppName}-error-log'
+
+  ErrorFirehose:
+    DependsOn:
+      - ErrorLogBucket
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${Env}-${AppName}-error-log'
+      ElasticsearchDestinationConfiguration:
+        BufferingHints:
+          IntervalInSeconds: !Ref KFHIntervalInSeconds
+          SizeInMBs: !Ref KFHSizeInMBs
+        DomainARN:
+          Fn::ImportValue: !Sub '${Env}-ESArn'
+        IndexName: 'error'
+        IndexRotationPeriod: OneDay
+        RetryOptions:
+          DurationInSeconds: !Ref KFHIntervalInSeconds
+        RoleARN: !GetAtt FirehoseToESRole.Arn
+        S3BackupMode: AllDocuments
+        S3Configuration:
+          BucketARN: !GetAtt ErrorLogBucket.Arn
+          BufferingHints:
+            IntervalInSeconds: !Ref KFHIntervalInSeconds
+            SizeInMBs: !Ref KFHSizeInMBs
+          CompressionFormat: 'GZIP'
+          Prefix: ''
+          RoleARN: !GetAtt FirehoseToS3Role.Arn
+        TypeName: 'application'
+
+  JournalLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${Env}-${AppName}-journal-log'
+
+  JournalFirehose:
+    DependsOn:
+      - JournalLogBucket
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${Env}-${AppName}-journal-log'
+      ElasticsearchDestinationConfiguration:
+        BufferingHints:
+          IntervalInSeconds: !Ref KFHIntervalInSeconds
+          SizeInMBs: !Ref KFHSizeInMBs
+        DomainARN:
+          Fn::ImportValue:
+            !Sub '${Env}-ESArn'
+        IndexName: 'journal'
+        IndexRotationPeriod: OneDay
+        RetryOptions:
+          DurationInSeconds: !Ref KFHIntervalInSeconds
+        RoleARN: !GetAtt FirehoseToESRole.Arn
+        S3BackupMode: AllDocuments
+        S3Configuration:
+          BucketARN: !GetAtt JournalLogBucket.Arn
+          BufferingHints:
+            IntervalInSeconds: !Ref KFHIntervalInSeconds
+            SizeInMBs: !Ref KFHSizeInMBs
+          CompressionFormat: "GZIP"
+          Prefix: ''
+          RoleARN: !GetAtt FirehoseToS3Role.Arn
+        TypeName: 'application'
+
+  AccessLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${Env}-${AppName}-access-log'
+
+  AccessFirehose:
+    DependsOn:
+    - AccessLogBucket
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${Env}-${AppName}-access-log'
+      ElasticsearchDestinationConfiguration:
+        BufferingHints:
+          IntervalInSeconds: !Ref KFHIntervalInSeconds
+          SizeInMBs: !Ref KFHSizeInMBs
+        DomainARN:
+          Fn::ImportValue:
+            !Sub '${Env}-ESArn'
+        IndexName: 'access'
+        IndexRotationPeriod: OneDay
+        RetryOptions:
+          DurationInSeconds: !Ref KFHIntervalInSeconds
+        RoleARN: !GetAtt FirehoseToESRole.Arn
+        S3BackupMode: AllDocuments
+        S3Configuration:
+          BucketARN: !GetAtt AccessLogBucket.Arn
+          BufferingHints:
+            IntervalInSeconds: !Ref KFHIntervalInSeconds
+            SizeInMBs: !Ref KFHSizeInMBs
+          CompressionFormat: "GZIP"
+          Prefix: ""
+          RoleARN: !GetAtt FirehoseToS3Role.Arn
+        TypeName: 'access'
